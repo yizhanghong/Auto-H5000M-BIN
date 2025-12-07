@@ -2,9 +2,8 @@ name: Build ImmortalWrt MT798x
 
 on:
   schedule:
-    # 每周一北京时间 0:00 (UTC 周日 16:00)
-    - cron: '0 16 * * 0'
-  workflow_dispatch:  # 允许手动触发
+    - cron: '0 16 * * 0'  # 每周一北京时间 0:00
+  workflow_dispatch:
 
 env:
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
@@ -15,334 +14,106 @@ env:
 
 jobs:
   build:
-    # 使用较大的 runner 以获得更好性能
-    # 标准 runner: ubuntu-22.04 (2核, 7GB RAM) - 免费
-    # 大型 runner: ubuntu-22.04-xl (4核, 16GB RAM) - 需要 GitHub Team/Enterprise
-    # 如需使用大型 runner，取消下一行注释并注释掉 ubuntu-22.04
     runs-on: ubuntu-22.04
-    # runs-on: ubuntu-22.04-xl  # 需要付费订阅
     
     steps:
-      - name: Check runner environment
-        run: |
-          echo "=========================================="
-          echo "检查 GitHub Actions Runner 环境"
-          echo "=========================================="
-          
-          # 检查 CPU 核心数
-          CPU_CORES=$(nproc)
-          echo "CPU 核心数: $CPU_CORES"
-          if [ "$CPU_CORES" -lt 2 ]; then
-            echo "❌ 错误: CPU 核心数不足 (最少需要 2 核)"
-            exit 1
-          fi
-          
-          # 检查内存
-          TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-          TOTAL_MEM_GB=$((TOTAL_MEM_KB / 1024 / 1024))
-          echo "总内存: ${TOTAL_MEM_GB}GB"
-          if [ "$TOTAL_MEM_GB" -lt 6 ]; then
-            echo "❌ 错误: 内存不足 (最少需要 6GB)"
-            exit 1
-          fi
-          
-          # 检查初始磁盘空间
-          INITIAL_DISK_GB=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-          echo "初始可用磁盘空间: ${INITIAL_DISK_GB}GB"
-          
-          # 检查系统架构
-          ARCH=$(uname -m)
-          echo "系统架构: $ARCH"
-          if [ "$ARCH" != "x86_64" ]; then
-            echo "❌ 错误: 仅支持 x86_64 架构"
-            exit 1
-          fi
-          
-          # 检查操作系统
-          OS_VERSION=$(cat /etc/os-release | grep "PRETTY_NAME" | cut -d'"' -f2)
-          echo "操作系统: $OS_VERSION"
-          
-          echo "=========================================="
-          echo "✅ Runner 环境检查通过"
-          echo "=========================================="
-
-      - name: Free up disk space
-        run: |
-          echo "开始清理磁盘空间..."
-          # 删除不需要的大型软件
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/hostedtoolcache/go
-          sudo rm -rf /opt/hostedtoolcache/node
-          sudo rm -rf /opt/hostedtoolcache/Python
-          sudo rm -rf /opt/hostedtoolcache/Ruby
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /usr/local/.ghcup
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/julia*
-          sudo rm -rf /usr/local/graalvm
-          sudo rm -rf /imagegeneration
-          
-          # 删除 Docker 镜像
-          sudo docker image prune --all --force 2>/dev/null || true
-          
-          # 删除不需要的软件包
-          sudo apt-get remove -y '^llvm-.*' '^dotnet-.*' 'php.*' '^mongodb-.*' '^mysql-.*' \
-            azure-cli google-cloud-sdk google-chrome-stable firefox powershell \
-            mono-devel libgl1-mesa-dri --fix-missing 2>/dev/null || true
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          
-          # 清理 apt 缓存
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo rm -rf /var/cache/apt/archives/*
-          
-          # 清理日志
-          sudo rm -rf /var/log/*
-          
-          echo "磁盘空间清理完成："
-          df -h
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 1024
-          swap-size-mb: 512
+          root-reserve-mb: 512
+          swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
           remove-docker-images: 'true'
-          build-mount-path: '/home/runner/work'
 
-      - name: Validate disk space after cleanup
+      - name: Prepare environment
         run: |
-          echo "=========================================="
-          echo "验证磁盘空间清理结果"
-          echo "=========================================="
+          # 环境信息 & 额外清理
+          echo "🖥️ Runner: $(nproc) cores, $(free -g | awk '/Mem:/{print $2}')GB RAM"
+          sudo rm -rf /opt/hostedtoolcache/{go,node,Python,Ruby} /usr/local/share/boost /usr/share/swift 2>/dev/null || true
           
-          # 检查根分区
-          ROOT_AVAIL_GB=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-          echo "根分区可用空间: ${ROOT_AVAIL_GB}GB"
+          # 验证磁盘空间
+          AVAIL_GB=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+          echo "💾 磁盘空间: ${AVAIL_GB}GB"
+          [ "$AVAIL_GB" -lt 40 ] && echo "❌ 空间不足" && exit 1
           
-          # 检查构建目录分区
-          BUILD_AVAIL_GB=$(df /home/runner/work | tail -1 | awk '{print int($4/1024/1024)}')
-          echo "构建目录可用空间: ${BUILD_AVAIL_GB}GB"
-          
-          # 最低要求 40GB 用于完整编译
-          MIN_REQUIRED_GB=40
-          
-          # 使用构建目录的空间作为主要判断依据
-          if [ "$BUILD_AVAIL_GB" -lt "$MIN_REQUIRED_GB" ]; then
-            echo "❌ 错误: 磁盘空间不足!"
-            echo "当前可用: ${BUILD_AVAIL_GB}GB, 最低需要: ${MIN_REQUIRED_GB}GB"
-            echo ""
-            echo "磁盘详情:"
-            df -h
-            echo ""
-            echo "请检查以下可能原因:"
-            echo "1. GitHub Actions Runner 分配的磁盘容量不足"
-            echo "2. 磁盘清理未能释放足够空间"
-            echo "3. 缓存占用过多空间"
-            exit 1
-          fi
-          
-          echo "✅ 磁盘空间检查通过 (可用: ${BUILD_AVAIL_GB}GB)"
-          echo ""
-          echo "完整磁盘信息:"
-          df -h
-          echo "=========================================="
-
-      - name: Check disk space after maximize
-        run: |
-          echo "最大化空间后："
-          df -h
-
-      - name: Install dependencies
-        run: |
+          # 安装依赖
           sudo apt-get update
-          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo apt-get install -y ccache
+          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ env.CONFIG_FILE }}
           max-size: 5G
-          verbose: 2
 
-      - name: Optimize ccache settings
+      - name: Restore cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/dl
+            ${{ env.SOURCE_DIR }}/staging_dir/host
+            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
+          key: ${{ runner.os }}-build-${{ env.CONFIG_FILE }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-build-${{ env.CONFIG_FILE }}-
+
+      - name: Clone source & setup feeds
         run: |
-          # 优化 ccache 配置以提高命中率
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
-          ccache --set-config=max_size=5G
+          # ccache 优化
+          ccache --set-config=compression=true --set-config=compression_level=6
           ccache --set-config=sloppiness=file_macro,time_macros,include_file_mtime,include_file_ctime
-          ccache -z  # 清零统计
-
-      - name: Clone or update source code
-        run: |
-          if [ -d "$SOURCE_DIR/.git" ]; then
-            echo "源码目录存在，执行 git pull 更新..."
-            cd $SOURCE_DIR
-            git fetch origin $REPO_BRANCH
-            git reset --hard origin/$REPO_BRANCH
-            git clean -fd
-            cd ..
-          else
-            echo "首次克隆源码..."
-            rm -rf $SOURCE_DIR
-            git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL $SOURCE_DIR
-          fi
-
-      - name: Add QModem feed
-        run: |
+          
+          # 克隆源码
+          git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
           cd $SOURCE_DIR
-          # 确保 QModem feed 存在
-          if ! grep -q "qmodem" feeds.conf.default; then
-            echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
-          fi
+          
+          # 添加 QModem feed & 更新
+          grep -q "qmodem" feeds.conf.default || echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+          ./scripts/feeds update -a && ./scripts/feeds install -a -f
 
-      - name: Download Modem WebUI
+      - name: Create Modem WebUI package
         run: |
-          # 克隆 Modem WebUI 项目（web 目录已经是构建好的静态文件）
-          git clone https://github.com/snowflakexuehui/Modem_Webui.git modem_webui_src
+          git clone --depth=1 https://github.com/snowflakexuehui/Modem_Webui.git modem_webui_src
+          PKG=$SOURCE_DIR/package/modem-webui
+          mkdir -p $PKG/files/{www/modem-webui,etc/uci-defaults,etc/hotplug.d/iface}
           
-          # 检查目录结构
-          echo "Modem WebUI 目录内容："
-          ls -la modem_webui_src/web/
-
-      - name: Create Modem WebUI OpenWrt package
-        run: |
-          # 创建 OpenWrt 包目录结构
-          mkdir -p $SOURCE_DIR/package/modem-webui/files/www/modem-webui
-          mkdir -p $SOURCE_DIR/package/modem-webui/files/etc/init.d
-          mkdir -p $SOURCE_DIR/package/modem-webui/files/etc/uci-defaults
+          # 复制静态文件 & 动态配置
+          cp -r modem_webui_src/web/* $PKG/files/www/modem-webui/
+          echo '(function(){window.MODEM_WEBUI_CONFIG={status:"true",at:{host:window.location.hostname,port:8765}}})();' > $PKG/files/www/modem-webui/dynamic-config.js
+          [ -f "$PKG/files/www/modem-webui/index.html" ] && sed -i 's|<head>|<head><script src="dynamic-config.js"></script>|' $PKG/files/www/modem-webui/index.html
           
-          # 复制已构建好的前端静态文件（web 目录本身就是 dist 输出）
-          cp -r modem_webui_src/web/* $SOURCE_DIR/package/modem-webui/files/www/modem-webui/
-          
-          # 创建一个 JavaScript 文件来动态获取当前 host
-          # 这样无论通过 IP 还是 immortalwrt.lan 访问都能正常工作
-          cat > $SOURCE_DIR/package/modem-webui/files/www/modem-webui/dynamic-config.js << 'EOFDYNAMICJS'
-          // 动态配置 - 自动使用当前访问的 host
-          (function() {
-            window.MODEM_WEBUI_CONFIG = {
-              status: "true",
-              at: {
-                host: window.location.hostname,  // 自动使用当前访问的 host
-                port: 8765
-              }
-            };
-          })();
-          EOFDYNAMICJS
-          
-          # 修改 index.html，在加载其他脚本前先加载动态配置
-          if [ -f "$SOURCE_DIR/package/modem-webui/files/www/modem-webui/index.html" ]; then
-            sed -i 's|<head>|<head><script src="dynamic-config.js"></script>|' \
-              $SOURCE_DIR/package/modem-webui/files/www/modem-webui/index.html
-          fi
-          
-          # 同时创建 config.json 作为后备（某些情况下前端可能直接读取此文件）
-          cat > $SOURCE_DIR/package/modem-webui/files/etc/uci-defaults/99-modem-webui << 'EOFSCRIPT'
+          # UCI 默认配置
+          cat > $PKG/files/etc/uci-defaults/99-modem-webui << 'EOF'
           #!/bin/sh
-          
-          # 创建配置更新脚本
-          cat > /usr/bin/update-modem-webui-config << 'INNEREOF'
+          cat > /usr/bin/update-modem-webui-config << 'INNER'
           #!/bin/sh
-          # 获取 br-lan 接口的 IP 地址
-          LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-          
-          # 如果获取失败，尝试从 uci 获取
-          if [ -z "$LAN_IP" ]; then
-            LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null | cut -d'/' -f1)
-          fi
-          
-          # 默认值
-          if [ -z "$LAN_IP" ]; then
-            LAN_IP="192.168.1.1"
-          fi
-          
-          # 获取路由器 hostname（用于域名访问）
-          HOSTNAME=$(uci get system.@system[0].hostname 2>/dev/null)
-          if [ -z "$HOSTNAME" ]; then
-            HOSTNAME="immortalwrt"
-          fi
-          
-          # 更新 config.json - 使用空 host，让前端使用 window.location.hostname
-          # 这样无论通过 IP 还是域名访问都能正常工作
-          cat > /www/modem-webui/config.json << EOF
-          {
-            "status": "true",
-            "at": {
-              "host": "",
-              "port": 8765
-            },
-            "_lan_ip": "$LAN_IP",
-            "_hostname": "$HOSTNAME.lan"
-          }
+          LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null | cut -d'/' -f1)
+          echo "{\"status\":\"true\",\"at\":{\"host\":\"\",\"port\":8765},\"_lan_ip\":\"${LAN_IP:-192.168.1.1}\"}" > /www/modem-webui/config.json
+          INNER
+          chmod +x /usr/bin/update-modem-webui-config && /usr/bin/update-modem-webui-config
           EOF
+          chmod +x $PKG/files/etc/uci-defaults/99-modem-webui
           
-          # 更新动态配置 JS（确保始终使用 window.location.hostname）
-          cat > /www/modem-webui/dynamic-config.js << 'JSEOF'
-          // 动态配置 - 自动使用当前访问的 host
-          // 支持 IP 访问 (如 192.168.1.1) 和域名访问 (如 immortalwrt.lan)
-          (function() {
-            window.MODEM_WEBUI_CONFIG = {
-              status: "true",
-              at: {
-                host: window.location.hostname,
-                port: 8765
-              }
-            };
-            console.log('[Modem WebUI] Using host:', window.location.hostname);
-          })();
-          JSEOF
+          # Hotplug
+          echo '#!/bin/sh' > $PKG/files/etc/hotplug.d/iface/99-modem-webui
+          echo '[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "lan" ] && /usr/bin/update-modem-webui-config' >> $PKG/files/etc/hotplug.d/iface/99-modem-webui
+          chmod +x $PKG/files/etc/hotplug.d/iface/99-modem-webui
           
-          logger -t modem-webui "Updated config with LAN IP: $LAN_IP, Hostname: $HOSTNAME.lan"
-          INNEREOF
-          
-          chmod +x /usr/bin/update-modem-webui-config
-          
-          # 首次运行更新配置
-          /usr/bin/update-modem-webui-config
-          
-          exit 0
-          EOFSCRIPT
-          
-          chmod +x $SOURCE_DIR/package/modem-webui/files/etc/uci-defaults/99-modem-webui
-          
-          # 创建 hotplug 脚本 - 当网络变化时自动更新配置
-          mkdir -p $SOURCE_DIR/package/modem-webui/files/etc/hotplug.d/iface
-          cat > $SOURCE_DIR/package/modem-webui/files/etc/hotplug.d/iface/99-modem-webui << 'EOFHOTPLUG'
-          #!/bin/sh
-          
-          [ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "lan" ] && {
-            sleep 2  # 等待接口完全启动
-            /usr/bin/update-modem-webui-config
-          }
-          EOFHOTPLUG
-          
-          chmod +x $SOURCE_DIR/package/modem-webui/files/etc/hotplug.d/iface/99-modem-webui
-          
-          # 创建 Makefile
-          cat > $SOURCE_DIR/package/modem-webui/Makefile << 'EOFMAKE'
+          # Makefile
+          cat > $PKG/Makefile << 'EOF'
           include $(TOPDIR)/rules.mk
-          
           PKG_NAME:=modem-webui
           PKG_VERSION:=1.0.0
           PKG_RELEASE:=1
-          
           include $(INCLUDE_DIR)/package.mk
-          
           define Package/modem-webui
             SECTION:=net
             CATEGORY:=Network
@@ -350,230 +121,83 @@ jobs:
             DEPENDS:=+uhttpd
             PKGARCH:=all
           endef
-          
-          define Package/modem-webui/description
-            A web-based modem management interface for 5G/LTE modems.
-            Provides dashboard, network config, SMS management and AT debug.
-          endef
-          
           define Build/Compile
           endef
-          
           define Package/modem-webui/install
-          	$(INSTALL_DIR) $(1)/www/modem-webui
-          	$(CP) ./files/www/modem-webui/* $(1)/www/modem-webui/
-          	$(INSTALL_DIR) $(1)/etc/uci-defaults
-          	$(INSTALL_BIN) ./files/etc/uci-defaults/99-modem-webui $(1)/etc/uci-defaults/
-          	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
-          	$(INSTALL_BIN) ./files/etc/hotplug.d/iface/99-modem-webui $(1)/etc/hotplug.d/iface/
+          	$(CP) ./files/* $(1)/
           endef
-          
           $(eval $(call BuildPackage,modem-webui))
-          EOFMAKE
-          
-          echo "Modem WebUI 包创建完成"
-          ls -la $SOURCE_DIR/package/modem-webui/
-
-      - name: Cache dl directory
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SOURCE_DIR }}/dl
-          key: ${{ runner.os }}-dl-${{ hashFiles(format('{0}/feeds.conf.default', env.SOURCE_DIR)) }}
-          restore-keys: |
-            ${{ runner.os }}-dl-
-
-      - name: Cache toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.SOURCE_DIR }}/staging_dir/host
-            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
-          key: ${{ runner.os }}-toolchain-${{ env.CONFIG_FILE }}-v1
-          restore-keys: |
-            ${{ runner.os }}-toolchain-${{ env.CONFIG_FILE }}-
-            ${{ runner.os }}-toolchain-
-
-      - name: Update and install feeds
-        run: |
-          cd $SOURCE_DIR
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # 强制安装 QModem 相关包以覆盖原有包
-          ./scripts/feeds install -a -f -p qmodem
+          EOF
+          rm -rf modem_webui_src
 
       - name: Configure build
         run: |
           cd $SOURCE_DIR
           cp -f defconfig/$CONFIG_FILE .config
           
-          # 取消原有 modem 相关选项
-          sed -i '/CONFIG_PACKAGE_luci-app-modem/d' .config
-          sed -i '/CONFIG_PACKAGE_luci-app-3ginfo-lite/d' .config
-          sed -i '/CONFIG_PACKAGE_luci-app-sms-tool/d' .config
+          # 移除旧 modem 配置
+          sed -i '/CONFIG_PACKAGE_luci-app-modem\|CONFIG_PACKAGE_luci-app-3ginfo-lite\|CONFIG_PACKAGE_luci-app-sms-tool/d' .config
           
-          # 启用 QModem 核心及其依赖
-          echo 'CONFIG_PACKAGE_luci-compat=y' >> .config
-          echo 'CONFIG_PACKAGE_qmodem=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem=y' >> .config
-          echo 'CONFIG_PACKAGE_sms-tool_q=y' >> .config
-          echo 'CONFIG_PACKAGE_quectel-cm-5g=y' >> .config
-          
-          # 启用 QModem MWAN (多WAN负载均衡/故障转移)
-          echo 'CONFIG_PACKAGE_luci-app-mwan3=y' >> .config
-          echo 'CONFIG_PACKAGE_mwan3=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem-mwan=y' >> .config
-          
-          # 启用 UPnP
-          echo 'CONFIG_PACKAGE_luci-app-upnp=y' >> .config
-          
-          # 启用 vlmcsd (KMS 激活服务)
-          echo 'CONFIG_PACKAGE_luci-app-vlmcsd=y' >> .config
-          echo 'CONFIG_PACKAGE_vlmcsd=y' >> .config
-          
-          # 启用 AdGuard Home
-          echo 'CONFIG_PACKAGE_luci-app-adguardhome=y' >> .config
-          echo 'CONFIG_PACKAGE_adguardhome=y' >> .config
-          
-          # 启用 ramfree
-          echo 'CONFIG_PACKAGE_luci-app-ramfree=y' >> .config
-          
-          # 启用 HomeProxy
-          echo 'CONFIG_PACKAGE_luci-app-homeproxy=y' >> .config
-          
-          # 启用 Modem WebUI (5G模组管理界面)
-          echo 'CONFIG_PACKAGE_modem-webui=y' >> .config
-          
-          # 启用 ccache 加速
-          echo 'CONFIG_CCACHE=y' >> .config
-          
+          # 添加所需包配置
+          cat >> .config << 'EOF'
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_qmodem=y
+          CONFIG_PACKAGE_luci-app-qmodem=y
+          CONFIG_PACKAGE_sms-tool_q=y
+          CONFIG_PACKAGE_quectel-cm-5g=y
+          CONFIG_PACKAGE_luci-app-qmodem-mwan=y
+          CONFIG_PACKAGE_mwan3=y
+          CONFIG_PACKAGE_luci-app-mwan3=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-app-vlmcsd=y
+          CONFIG_PACKAGE_vlmcsd=y
+          CONFIG_PACKAGE_luci-app-adguardhome=y
+          CONFIG_PACKAGE_adguardhome=y
+          CONFIG_PACKAGE_luci-app-ramfree=y
+          CONFIG_PACKAGE_luci-app-homeproxy=y
+          CONFIG_PACKAGE_modem-webui=y
+          CONFIG_CCACHE=y
+          EOF
           make defconfig
-          
-          # 保存配置文件到仓库（确保目录存在）
-          mkdir -p ../config
-          cp .config ../config/current.config || true
 
-      - name: Download packages
-        run: |
-          cd $SOURCE_DIR
-          # 使用 8 个并行下载，并重试 3 次失败的下载
-          for i in 1 2 3; do
-            echo "下载尝试 $i/3..."
-            make download -j8 && break
-            echo "部分下载失败，清理无效文件后重试..."
-            find dl -size -1024c -exec rm -f {} \;
-            sleep 5
-          done
-          # 清理不完整的下载文件
-          find dl -size -1024c -exec rm -f {} \;
-          echo "下载完成后磁盘空间："
-          df -h
-
-      - name: Compile toolchain
+      - name: Download & Compile
         run: |
           cd $SOURCE_DIR
           THREADS=$(($(nproc) + 1))
-          
-          # 启用 ccache
           export PATH="/usr/lib/ccache:$PATH"
           
-          echo "编译工具，使用 $THREADS 线程..."
-          make tools/install -j$THREADS || make tools/install -j1 V=s
+          # 下载（带重试）
+          for i in 1 2 3; do make download -j8 && break; find dl -size -1024c -delete 2>/dev/null; sleep 3; done
           
-          echo "编译工具链，使用 $THREADS 线程..."
-          make toolchain/install -j$THREADS || make toolchain/install -j1 V=s
+          # 编译
+          echo "🔨 开始编译 (${THREADS} 线程)..."
+          make -j$THREADS BUILD_LOG=1 || make -j1 V=s
           
-          echo "工具链编译后磁盘空间："
-          df -h
+          # ccache 统计
+          echo "📊 ccache:" && ccache -s | grep -E "(hit rate|Hits|Misses)" || true
 
-      - name: Clean up before firmware compile
-        run: |
-          # 清理不需要的文件以释放空间
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo rm -rf /var/cache/apt/archives/*
-          sudo rm -rf /tmp/*
-          echo "清理后磁盘空间："
-          df -h
-
-      - name: Compile firmware
-        run: |
-          cd $SOURCE_DIR
-          
-          # 计算最优线程数 (CPU核心数 + 1)
-          THREADS=$(($(nproc) + 1))
-          echo "开始编译，使用 $THREADS 线程..."
-          
-          # 启用 ccache
-          export PATH="/usr/lib/ccache:$PATH"
-          
-          # 优化编译参数
-          # -j: 并行任务数
-          # BUILD_LOG=1: 保存编译日志便于调试
-          # IGNORE_ERRORS=m: 忽略模块编译错误继续
-          make -j$THREADS BUILD_LOG=1 IGNORE_ERRORS=m || make -j1 V=s
-          
-          echo ""
-          echo "========================================"
-          echo "ccache 统计信息:"
-          ccache -s
-          echo "========================================"
-
-      - name: Check disk space
-        if: always()
-        run: df -h
-
-      - name: Prepare artifacts
+      - name: Prepare & Upload artifacts
         run: |
           mkdir -p artifacts
-          cp -rf $SOURCE_DIR/bin/targets/*/*/* artifacts/ 2>/dev/null || true
-          rm -rf artifacts/packages
-          rm -f artifacts/*.buildinfo
-          rm -f artifacts/*.manifest
-          rm -f artifacts/sha256sums
+          find $SOURCE_DIR/bin/targets -type f \( -name "*.bin" -o -name "*.img.gz" \) -exec cp {} artifacts/ \;
           ls -lh artifacts/
 
-      - name: Save build info to repository
-        run: |
-          mkdir -p config logs
-          
-          # 保存构建信息
-          echo "构建时间: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" > logs/last_build.txt
-          echo "源码分支: $REPO_BRANCH" >> logs/last_build.txt
-          echo "配置文件: $CONFIG_FILE" >> logs/last_build.txt
-          echo "源码 Commit: $(cd $SOURCE_DIR && git rev-parse HEAD)" >> logs/last_build.txt
-          
-          # 保存 feeds.conf
-          cp $SOURCE_DIR/feeds.conf.default config/feeds.conf.default
-
-      - name: Commit build info
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add config/ logs/ || true
-          git diff --staged --quiet || git commit -m "Update build info $(TZ='Asia/Shanghai' date +'%Y-%m-%d')"
-          git push || true
-
-      - name: Get current date
-        id: date
-        run: echo "date=$(TZ='Asia/Shanghai' date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-
-      - name: Upload firmware artifacts
+      - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-MT7987-MT7992-${{ steps.date.outputs.date }}
+          name: ImmortalWrt-MT7987-${{ github.run_number }}
           path: artifacts/
           retention-days: 30
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.date.outputs.date }}
-          name: ImmortalWrt MT7987/MT7992 Build ${{ steps.date.outputs.date }}
+          tag_name: v${{ github.run_number }}
+          name: ImmortalWrt MT7987/MT7992 #${{ github.run_number }}
           body: |
-            自动构建 ImmortalWrt MT7987/MT7992 固件
-            
-            构建时间: ${{ steps.date.outputs.date }}
-            源码分支: ${{ env.REPO_BRANCH }}
-            配置文件: ${{ env.CONFIG_FILE }}
+            🔧 自动构建 ImmortalWrt MT7987/MT7992 固件
+            📅 时间: ${{ github.event.repository.updated_at }}
+            🌿 分支: ${{ env.REPO_BRANCH }}
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
