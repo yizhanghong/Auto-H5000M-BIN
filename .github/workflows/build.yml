@@ -17,6 +17,28 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          echo "清理前磁盘空间:"
+          df -h
+          # 删除不需要的大型组件
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/{CodeQL,go,node,Python,Ruby} \
+            /usr/local/share/boost /usr/share/swift /usr/local/.ghcup \
+            /usr/local/graalvm /imagegeneration 2>/dev/null || true
+          sudo docker image prune -a -f 2>/dev/null || true
+          sudo apt-get remove -y '^llvm-.*' '^dotnet-.*' 'php.*' azure-cli \
+            google-cloud-sdk google-chrome-stable firefox mono-devel 2>/dev/null || true
+          sudo apt-get autoremove -y && sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+          echo "清理后磁盘空间:"
+          df -h
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -28,26 +50,19 @@ jobs:
           remove-codeql: 'true'
           remove-docker-images: 'true'
 
-      - name: Prepare environment
+      - name: Verify & Install dependencies
         run: |
-          # 环境信息 & 额外清理
-          echo "🖥️ Runner: $(nproc) cores, $(free -g | awk '/Mem:/{print $2}')GB RAM"
-          sudo rm -rf /opt/hostedtoolcache/{go,node,Python,Ruby} /usr/local/share/boost /usr/share/swift 2>/dev/null || true
-          
           # 验证磁盘空间
           AVAIL_GB=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+          echo "🖥️ Runner: $(nproc) cores, $(free -g | awk '/Mem:/{print $2}')GB RAM"
           echo "💾 磁盘空间: ${AVAIL_GB}GB"
-          [ "$AVAIL_GB" -lt 40 ] && echo "❌ 空间不足" && exit 1
+          [ "$AVAIL_GB" -lt 30 ] && echo "❌ 空间不足 (需要 30GB+)" && exit 1
+          echo "✅ 空间检查通过"
           
           # 安装依赖
           sudo apt-get update
           sudo apt-get install -y ccache
           sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
