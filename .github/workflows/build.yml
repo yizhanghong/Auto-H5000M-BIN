@@ -252,6 +252,7 @@ jobs:
           CONFIG_PACKAGE_luci-app-upnp=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
           CONFIG_PACKAGE_vlmcsd=y
+          CONFIG_PACKAGE_smartdns=y
           CONFIG_PACKAGE_luci-app-adguardhome=y
           CONFIG_PACKAGE_adguardhome=y
           CONFIG_PACKAGE_luci-app-ramfree=y
