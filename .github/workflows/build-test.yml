@@ -109,9 +109,8 @@ jobs:
           
           # 关键修复：重命名冲突目录
           if [ -d "package/mtk/applications/5g-modem" ]; then
-            echo "重命名冲突目录以避免编译错误..."
-            mv "package/mtk/applications/5g-modem" "package/mtk/applications/5g-modem-DISABLED" 2>/dev/null || true
-            echo "✅ 冲突目录已重命名"
+            echo "移除冲突目录以避免编译错误..."
+            rm -rf "package/mtk/applications/5g-modem" 2>/dev/null || true"
           else
             echo "ℹ️ 未找到冲突目录，可能已被修复"
           fi
@@ -164,23 +163,12 @@ jobs:
           
           # 使用修复后的配置文件
           cp $GITHUB_WORKSPACE/workspace/h5000m.config .config
-          
-          # 验证配置中是否已禁用冲突包
-          if grep -q "CONFIG_PACKAGE_fibocom_QMI_WWAN=y" .config; then
-            echo "⚠️ 检测到冲突配置，正在修复..."
-            sed -i 's/CONFIG_PACKAGE_fibocom_QMI_WWAN=y/# CONFIG_PACKAGE_fibocom_QMI_WWAN is not set/g' .config
-            sed -i 's/CONFIG_PACKAGE_quectel_QMI_WWAN=y/# CONFIG_PACKAGE_quectel_QMI_WWAN is not set/g' .config
-            sed -i 's/CONFIG_PACKAGE_simcom_QMI_WWAN=y/# CONFIG_PACKAGE_simcom_QMI_WWAN is not set/g' .config
-          fi
-          
           # 确保CCache启用
           if ! grep -q "CONFIG_CCACHE=y" .config; then
             echo "CONFIG_CCACHE=y" >> .config
           fi
-          
           # 生成完整配置
           make defconfig
-          
           echo "📋 配置验证:"
           echo "冲突包状态:"
           grep -E "CONFIG_PACKAGE.*QMI_WWAN" .config || echo "✅ 无冲突包配置"
