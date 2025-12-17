@@ -148,6 +148,19 @@ jobs:
           cd $SOURCE_DIR
           cp -f defconfig/$CONFIG_FILE .config
 
+          # 冲突检测
+          echo "🔍 检查选项冲突..."
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ] && [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            echo "❌ 错误: 不能同时启用 QModem Next 和 QModem 旧版！"
+            exit 1
+          fi
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ]; then
+            echo "✅ 选择 QModem Next (新版JS前端)，将禁用 luci-compat 依赖"
+          fi
+          if [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            echo "✅ 选择 QModem (旧版)，将启用 luci-compat 依赖"
+          fi
+
           if [ -f "$GITHUB_WORKSPACE/h5000m.extra.config" ]; then
             cat "$GITHUB_WORKSPACE/h5000m.extra.config" >> .config
             echo "追加了来自 h5000m.extra.config 的额外配置"
