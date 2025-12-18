@@ -101,9 +101,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-
       - name: 准备构建环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
+          echo "🧹 准备构建环境并清理磁盘..."
+
+          # 显示清理前磁盘状态
+          echo "=== 清理前磁盘状态 ==="
+          df -h || true
+
+          # 删除 Docker 镜像
+          echo "清理Docker镜像..."
+          docker rmi $(docker images -q) 2>/dev/null || true
+          docker system prune -f || true
+
+          # 删除不需要的大型组件
+          echo "删除大型组件..."
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /etc/mysql /etc/php /usr/local/share/boost /usr/share/swift \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/local/graalvm /imagegeneration || true
+
+          # 卸载不需要的软件
+          echo "卸载不需要的软件..."
+          sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* hhvm* llvm* firefox* \
+            google* dotnet* aspnetcore* powershell* openjdk* adoptopenjdk* mysql* php* \
+            mongodb* moby* snap* || true
+
+          # 清理系统缓存
+          echo "清理系统缓存..."
+          sudo apt-get clean || true
+          sudo apt-get autoclean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
           # 清理旧的构建目录
-          echo "🧹 清理旧的构建文件..."
+          echo "清理旧的构建文件..."
           rm -rf immortalwrt || true
           rm -rf /tmp/opkg-* || true
 
@@ -112,12 +143,11 @@ jobs:
           df -h || true
           echo "可用空间: $(df / | tail -1 | awk '{print $4}')"
 
-          # 如果空间不足，清理一些大文件
-          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 10 ]; then
-            echo "⚠️ 磁盘空间不足，执行深度清理..."
-            docker system prune -f || true
-            rm -rf /tmp/* || true
-            rm -rf ~/.cache/* || true
+          # 如果空间不足，执行额外清理
+          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 15 ]; then
+            echo "⚠️ 磁盘空间不足，执行额外清理..."
+            sudo rm -rf /var/log/* || true
+            sudo rm -rf /home/runner/.cache/* || true
           fi
       - name: 克隆源码并设置 feeds
         run: |
@@ -405,53 +435,64 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-
       - name: 深度清理磁盘空间
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          echo "🧹 执行深度磁盘清理..."
-          
-          # 显示当前磁盘使用情况
-          echo "=== 清理前磁盘状态 ==="
+          echo "========== 清理前磁盘空间 =========="
           df -h || true
-          
-          # 清理Docker相关
-          echo "清理Docker..."
+
+          # 删除 Docker 镜像
+          echo "清理Docker镜像..."
+          docker rmi $(docker images -q) 2>/dev/null || true
           docker system prune -f || true
           docker image prune -f || true
           docker volume prune -f || true
-          
+
+          # 删除不需要的大型组件
+          echo "删除大型组件..."
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /etc/mysql /etc/php /usr/local/share/boost /usr/share/swift \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/local/graalvm /imagegeneration || true
+
+          # 卸载不需要的软件
+          echo "卸载不需要的软件..."
+          sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* hhvm* llvm* firefox* \
+            google* dotnet* aspnetcore* powershell* openjdk* adoptopenjdk* mysql* php* \
+            mongodb* moby* snap* || true
+
           # 清理系统缓存
           echo "清理系统缓存..."
           sudo apt-get clean || true
           sudo apt-get autoclean || true
           sudo rm -rf /var/lib/apt/lists/* || true
-          
+
           # 清理临时文件
           echo "清理临时文件..."
           sudo rm -rf /tmp/* || true
           sudo rm -rf /var/tmp/* || true
           rm -rf ~/.cache/* || true
-          
+
           # 清理日志文件
           echo "清理日志文件..."
           sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} \; || true
           sudo rm -rf /var/log/journal/* || true
-          
+
           # 清理GitHub Actions缓存
           echo "清理GitHub Actions缓存..."
           rm -rf /home/runner/.cache || true
-          
+
           # 清理源码目录外的其他文件
           echo "清理工作目录..."
           find . -maxdepth 1 -name "*.log" -delete || true
           find . -maxdepth 1 -name "*.tmp" -delete || true
-          
-          # 显示清理后磁盘状态
-          echo "=== 清理后磁盘状态 ==="
+
+          echo "========== 清理后磁盘状态 =========="
           df -h || true
-          
+
           # 检查可用空间
           AVAILABLE_GB=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
           echo "可用空间: ${AVAILABLE_GB}GB"
-          
+
           if [ $AVAILABLE_GB -lt 20 ]; then
             echo "⚠️ 警告: 可用空间不足20GB，可能影响编译"
             exit 1
@@ -501,17 +542,59 @@ jobs:
         with:
           fetch-depth: 1
       - name: 清理打包环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          echo "🧹 清理打包环境..."
-          
-          # 清理Docker和系统缓存
-          docker system prune -f || true
-          sudo apt-get clean || true
-          sudo rm -rf /tmp/* || true
-          
-          # 显示磁盘状态
-          echo "=== 打包前磁盘状态 ==="
+          echo "🧹 深度清理打包环境..."
+
+          # 显示清理前磁盘状态
+          echo "=== 清理前磁盘状态 ==="
           df -h || true
+
+          # 删除 Docker 镜像和容器
+          echo "清理Docker镜像和容器..."
+          docker rmi $(docker images -q) 2>/dev/null || true
+          docker system prune -f || true
+          docker image prune -f || true
+          docker volume prune -f || true
+
+          # 删除不需要的大型组件
+          echo "删除大型组件..."
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /etc/mysql /etc/php /usr/local/share/boost /usr/share/swift \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/local/graalvm /imagegeneration || true
+
+          # 卸载不需要的软件
+          echo "卸载不需要的软件..."
+          sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* hhvm* llvm* firefox* \
+            google* dotnet* aspnetcore* powershell* openjdk* adoptopenjdk* mysql* php* \
+            mongodb* moby* snap* || true
+
+          # 清理系统缓存和临时文件
+          echo "清理系统缓存和临时文件..."
+          sudo apt-get clean || true
+          sudo apt-get autoclean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf /tmp/* || true
+          sudo rm -rf /var/tmp/* || true
+          rm -rf ~/.cache/* || true
+
+          # 清理旧的构建目录
+          echo "清理旧的构建文件..."
+          rm -rf immortalwrt || true
+          rm -rf /tmp/opkg-* || true
+
+          # 检查并清理磁盘空间
+          echo "💾 检查磁盘空间..."
+          df -h || true
+          echo "可用空间: $(df / | tail -1 | awk '{print $4}')"
+
+          # 如果空间不足，执行额外清理
+          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 20 ]; then
+            echo "⚠️ 磁盘空间不足，执行额外清理..."
+            sudo rm -rf /var/log/* || true
+            sudo rm -rf /home/runner/.cache/* || true
+          fi
       - name: 恢复编译结果
         uses: actions/cache@v4
         with:
@@ -577,9 +660,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-build-${{ env.CONFIG_FILE }}-
       - name: 准备构建环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
+          echo "🧹 准备构建环境并清理磁盘..."
+
+          # 显示清理前磁盘状态
+          echo "=== 清理前磁盘状态 ==="
+          df -h || true
+
+          # 删除 Docker 镜像
+          echo "清理Docker镜像..."
+          docker rmi $(docker images -q) 2>/dev/null || true
+          docker system prune -f || true
+
+          # 删除不需要的大型组件
+          echo "删除大型组件..."
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /etc/mysql /etc/php /usr/local/share/boost /usr/share/swift \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/local/graalvm /imagegeneration || true
+
+          # 卸载不需要的软件
+          echo "卸载不需要的软件..."
+          sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* hhvm* llvm* firefox* \
+            google* dotnet* aspnetcore* powershell* openjdk* adoptopenjdk* mysql* php* \
+            mongodb* moby* snap* || true
+
+          # 清理系统缓存
+          echo "清理系统缓存..."
+          sudo apt-get clean || true
+          sudo apt-get autoclean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
           # 清理旧的构建目录
-          echo "🧹 清理旧的构建文件..."
+          echo "清理旧的构建文件..."
           rm -rf immortalwrt || true
           rm -rf /tmp/opkg-* || true
 
@@ -588,12 +702,11 @@ jobs:
           df -h || true
           echo "可用空间: $(df / | tail -1 | awk '{print $4}')"
 
-          # 如果空间不足，清理一些大文件
-          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 10 ]; then
-            echo "⚠️ 磁盘空间不足，执行深度清理..."
-            docker system prune -f || true
-            rm -rf /tmp/* || true
-            rm -rf ~/.cache/* || true
+          # 如果空间不足，执行额外清理
+          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 15 ]; then
+            echo "⚠️ 磁盘空间不足，执行额外清理..."
+            sudo rm -rf /var/log/* || true
+            sudo rm -rf /home/runner/.cache/* || true
           fi
       - name: 克隆源码并设置 feeds
         run: |
