@@ -173,7 +173,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-toolchain-${{ env.REPO_BRANCH }}-
             ${{ runner.os }}-toolchain-
-          compression-level: 6
 
       - name: 克隆源码
         run: |
@@ -336,7 +335,6 @@ jobs:
           key: ${{ runner.os }}-downloads-${{ env.REPO_BRANCH }}-${{ steps.cache-key.outputs.key }}
           restore-keys: |
             ${{ runner.os }}-downloads-${{ env.REPO_BRANCH }}-
-          compression-level: 6
 
   # ============================================================================
   # Job 3: 编译固件 (30-90 分钟, 首次; 5-30 分钟, 后续)
@@ -361,7 +359,6 @@ jobs:
           key: ${{ runner.os }}-downloads-${{ env.REPO_BRANCH }}-${{ needs.download.outputs.cache-key }}
           restore-keys: |
             ${{ runner.os }}-downloads-${{ env.REPO_BRANCH }}-
-          compression-level: 6
 
       - name: 恢复 ccache
         uses: actions/cache@v4
@@ -621,7 +618,6 @@ jobs:
             ${{ env.SOURCE_DIR }}/staging_dir/target-*
             # 全部缓存 staging_dir 以加速后续构建
           key: ${{ runner.os }}-build-${{ env.REPO_BRANCH }}-${{ needs.download.outputs.cache-key }}
-          compression-level: 6
 
       - name: 编译后清理 (释放磁盘)
         if: always()
