@@ -80,9 +80,393 @@ env:
 
 # 作业定义
 jobs:
-  build:  # 构建作业
+  download:  # 下载作业
     runs-on: ubuntu-22.04  # 运行环境
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: 生成缓存键
+        id: cache-key
+        run: echo "key=${{ github.run_number }}-${{ github.sha }}" >> $GITHUB_OUTPUT
+      - name: 缓存编译器缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-${{ hashFiles('**/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-
+      - name: 准备构建环境
+        run: |
+          # 清理旧的构建目录
+          echo "🧹 清理旧的构建文件..."
+          rm -rf immortalwrt || true
+          rm -rf /tmp/opkg-* || true
+
+          # 检查并清理磁盘空间
+          echo "💾 检查磁盘空间..."
+          df -h || true
+          echo "可用空间: $(df / | tail -1 | awk '{print $4}')"
+
+          # 如果空间不足，清理一些大文件
+          if [ $(df / | tail -1 | awk '{print $4}' | sed 's/G//') -lt 10 ]; then
+            echo "⚠️ 磁盘空间不足，执行深度清理..."
+            docker system prune -f || true
+            rm -rf /tmp/* || true
+            rm -rf ~/.cache/* || true
+          fi
+      - name: 克隆源码并设置 feeds
+        run: |
+          if [ -d "$SOURCE_DIR/.git" ]; then
+            cd $SOURCE_DIR
+            git fetch origin $REPO_BRANCH
+            git reset --hard origin/$REPO_BRANCH
+            git clean -fd
+          else
+            rm -rf $SOURCE_DIR
+            git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
+            cd $SOURCE_DIR
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/feeds.conf.default" ]; then
+            cp "$GITHUB_WORKSPACE/feeds.conf.default" ./feeds.conf.default
+            echo "使用自定义 feeds.conf.default"
+          else
+            echo "使用默认 feeds.conf.default"
+          fi
+
+          ./scripts/feeds update -a || echo "警告: 部分 feeds 更新失败，继续进行..."
+          ./scripts/feeds install -a -f || echo "警告: 部分 feeds 安装失败，继续进行..."
+
+          # 替换 golang 包为 sbwml 版本 (支持 golang 1.24.x)
+          echo "替换 golang 包为最新版本..."
+          rm -rf feeds/packages/lang/golang
+          git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang || echo "警告: golang 包替换失败"
+
+          # 删除冲突的包
+          rm -rf feeds/packages/net/v2ray-geodata || true
+
+          # 如果启用 AdGuardHome，则克隆包
+          if [ "${{ inputs.enable_adguardhome }}" = "true" ]; then
+            [ ! -d "package/luci-app-adguardhome" ] && \
+              git clone --depth=1 https://github.com/rufengsuixing/luci-app-adguardhome.git package/luci-app-adguardhome || true
+          fi
+
+          AGH_LUCI_SCRIPT="package/luci-app-adguardhome/root/usr/share/AdGuardHome/links.sh"
+          if [ -f "$AGH_LUCI_SCRIPT" ]; then
+            sed -i 's|mv /usr/bin/AdGuardHome/AdGuardHome|rm -rf /usr/bin/AdGuardHome 2>/dev/null; mkdir -p /usr/bin/AdGuardHome; mv /tmp/AdGuardHomeupdate/AdGuardHome_linux_*/AdGuardHome|g' "$AGH_LUCI_SCRIPT" || true
+          fi
+
+          # 处理 MosDNS 和相关包 (非官方源码需要重新克隆)
+          echo "处理 MosDNS 和相关包..."
+          find ./ | grep Makefile | grep v2ray-geodata | xargs rm -f || true
+          find ./ | grep Makefile | grep mosdns | xargs rm -f || true
+          git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns || echo "警告: MosDNS 克隆失败"
+          git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata || echo "警告: v2ray-geodata 克隆失败"
+
+          rm -rf package/feeds/packages/exim package/feeds/packages/onionshare-cli package/feeds/packages/python-zope-event package/feeds/packages/python-zope-interface 2>/dev/null || true
+      - name: 配置构建
+        run: |
+          cd $SOURCE_DIR
+          cp -f defconfig/$CONFIG_FILE .config
+
+          # 冲突检测
+          echo "🔍 检查选项冲突..."
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ] && [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            echo "❌ 错误: 不能同时启用 QModem Next 和 QModem 旧版！"
+            exit 1
+          fi
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ]; then
+            echo "✅ 选择 QModem Next (新版JS前端)，将启用 luci-compat 依赖"
+          fi
+          if [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            echo "✅ 选择 QModem (旧版)，将启用 luci-compat 依赖"
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/h5000m.extra.config" ]; then
+            cat "$GITHUB_WORKSPACE/h5000m.extra.config" >> .config
+            echo "追加了来自 h5000m.extra.config 的额外配置"
+          else
+            echo "未找到额外配置文件，使用默认 .config"
+          fi
+
+          # 根据 inputs 启用可选插件
+          if [ "${{ inputs.enable_adguardhome }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-adguardhome=y" >> .config
+            echo "CONFIG_PACKAGE_adguardhome=y" >> .config
+            echo "启用 AdGuardHome"
+          fi
+          if [ "${{ inputs.enable_homeproxy }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-homeproxy=y" >> .config
+            echo "启用 HomeProxy"
+          fi
+          if [ "${{ inputs.enable_openclash }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+            echo "CONFIG_PACKAGE_bash=y" >> .config
+            echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+            echo "CONFIG_PACKAGE_curl=y" >> .config
+            echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+            echo "CONFIG_PACKAGE_ip-full=y" >> .config
+            echo "CONFIG_PACKAGE_ruby=y" >> .config
+            echo "CONFIG_PACKAGE_ruby-yaml=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-inet-diag=y" >> .config
+            echo "CONFIG_PACKAGE_unzip=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
+            echo "CONFIG_PACKAGE_luci-compat=y" >> .config
+            echo "CONFIG_PACKAGE_luci=y" >> .config
+            echo "CONFIG_PACKAGE_luci-base=y" >> .config
+            echo "启用 OpenClash (仅nftables)"
+          fi
+          if [ "${{ inputs.enable_mihomo }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_nikki=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-nikki=y" >> .config
+            echo "CONFIG_PACKAGE_luci-i18n-nikki-zh-cn=y" >> .config
+            echo "CONFIG_PACKAGE_mihomo=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-mihomo=y" >> .config
+            echo "CONFIG_PACKAGE_luci-i18n-mihomo-zh-cn=y" >> .config
+            echo "启用 Mihomo"
+          fi
+          if [ "${{ inputs.enable_upnp }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
+            echo "启用 UPnP"
+          fi
+          if [ "${{ inputs.enable_vlmcsd }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-vlmcsd=y" >> .config
+            echo "CONFIG_PACKAGE_vlmcsd=y" >> .config
+            echo "启用 VLMCSd"
+          fi
+          if [ "${{ inputs.enable_smartdns }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_smartdns=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-smartdns=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-smartdns-zh-cn=y" >> .config
+            echo "启用 SmartDNS"
+          fi
+          if [ "${{ inputs.enable_mosdns }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_mosdns=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-mosdns=y" >> .config
+            echo "启用 MosDNS"
+          fi
+          if [ "${{ inputs.enable_dockerman }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+            echo "CONFIG_PACKAGE_docker=y" >> .config
+            echo "CONFIG_PACKAGE_docker-compose=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-veth=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-dm=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-br-netfilter=y" >> .config
+            echo "CONFIG_PACKAGE_kmod-ipt-nat=y" >> .config
+            echo "启用 DockerMan"
+          fi
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-qmodem-next=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
+            echo "启用 QModem Next (新版JS前端)"
+          fi
+          if [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-qmodem=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ndisc6=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y" >> .config
+            echo "启用 QModem (旧版)"
+          fi
+          if [ "${{ inputs.enable_mwan }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-qmodem-mwan=y" >> .config
+            echo "CONFIG_PACKAGE_mwan3=y" >> .config
+            echo "CONFIG_PACKAGE_luci-app-mwan3=y" >> .config
+            echo "启用 MWAN (多WAN负载均衡)"
+          fi
+
+          make defconfig || true
+      - name: 验证构建配置
+        run: |
+          cd $SOURCE_DIR
+          echo "📦 关键包配置状态:"
+          grep -E "CONFIG_PACKAGE_qmodem=" .config || echo "QModem 核心包未找到"
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ] || [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(luci-app-qmodem|luci-app-qmodem-next)=" .config || echo "QModem UI 包未找到"
+          fi
+          if [ "${{ inputs.enable_adguardhome }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(luci-app-adguardhome|adguardhome)=" .config || echo "AdGuardHome 包未找到"
+          fi
+          if [ "${{ inputs.enable_mihomo }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(mihomo|luci-app-mihomo)=" .config || echo "Mihomo 包未找到"
+          fi
+          if [ "${{ inputs.enable_upnp }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_luci-app-upnp=" .config || echo "UPnP 包未找到"
+          fi
+          if [ "${{ inputs.enable_vlmcsd }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(luci-app-vlmcsd|vlmcsd)=" .config || echo "VLMCSd 包未找到"
+          fi
+          if [ "${{ inputs.enable_smartdns }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(smartdns|luci-app-smartdns)=" .config || echo "SmartDNS 包未找到"
+          fi
+          if [ "${{ inputs.enable_mosdns }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(mosdns|luci-app-mosdns)=" .config || echo "MosDNS 包未找到"
+          fi
+          if [ "${{ inputs.enable_dockerman }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(luci-app-dockerman|docker)=" .config || echo "DockerMan 包未找到"
+          fi
+          if [ "${{ inputs.enable_qmodem_next }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_luci-app-qmodem-next=" .config || echo "QModem Next 包未找到"
+          fi
+          if [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_luci-app-qmodem=" .config || echo "QModem 包未找到"
+          fi
+          if [ "${{ inputs.enable_mwan }}" = "true" ]; then
+            grep -E "CONFIG_PACKAGE_(luci-app-qmodem-mwan|mwan3)=" .config || echo "MWAN 包未找到"
+          fi
+      - name: 下载依赖包
+        run: |
+          cd $SOURCE_DIR
+          echo "📥 开始下载依赖包..."
+          THREADS=$(($(nproc) + 1))
+          export PATH="/usr/lib/ccache:$PATH"
+          for i in 1 2 3; do
+            echo "下载尝试 $i/3..."
+            if make download -j16; then
+              echo "✅ 下载成功"
+              break
+            else
+              echo "❌ 下载失败，重试中..."
+              find dl -size -1024c -delete 2>/dev/null
+              sleep 5
+            fi
+          done
+      - name: 保存下载缓存
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/dl
+            ${{ env.SOURCE_DIR }}/staging_dir/host
+            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
+            ${{ env.SOURCE_DIR }}/staging_dir/target-*
+            ${{ env.SOURCE_DIR }}/build_dir/host
+            ${{ env.SOURCE_DIR }}/build_dir/toolchain-*
+            ${{ env.SOURCE_DIR }}/.config
+            ${{ env.SOURCE_DIR }}/feeds.conf.default
+          key: download-${{ steps.cache-key.outputs.key }}
+          restore-keys: |
+            download-
+
+  build:  # 编译作业
+    runs-on: ubuntu-22.04  # 运行环境
+    needs: download
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: 恢复下载缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/dl
+            ${{ env.SOURCE_DIR }}/staging_dir/host
+            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
+            ${{ env.SOURCE_DIR }}/staging_dir/target-*
+            ${{ env.SOURCE_DIR }}/build_dir/host
+            ${{ env.SOURCE_DIR }}/build_dir/toolchain-*
+            ${{ env.SOURCE_DIR }}/.config
+            ${{ env.SOURCE_DIR }}/feeds.conf.default
+          key: download-${{ needs.download.outputs.cache-key }}
+          restore-keys: |
+            download-
+      - name: 恢复编译器缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-${{ hashFiles('**/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.CONFIG_FILE }}-
+      - name: 编译固件
+        run: |
+          cd $SOURCE_DIR
+          echo "💾 检查磁盘空间..."
+          df -h || true
+          echo "可用空间: $(df / | tail -1 | awk '{print $4}')"
+
+          # 清理可能的损坏文件
+          echo "🧹 清理构建缓存..."
+          find dl -name "*.dl" -size -1024c -delete 2>/dev/null || true
+          find dl -name "*.dl.*" -size -1024c -delete 2>/dev/null || true
+
+          THREADS=$(($(nproc) + 1))
+          export PATH="/usr/lib/ccache:$PATH"
+          echo "🔨 开始编译 (${THREADS} 线程)..."
+          # 编译阶段 - 减少并行度以避免内存问题
+          if ! make -j$THREADS BUILD_LOG=1 IGNORE_ERRORS=m; then
+            echo "⚠️ 并行编译失败，尝试单线程编译..."
+            make -j1 V=s || true
+          fi
+      - name: 保存编译缓存
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/staging_dir/host
+            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
+            ${{ env.SOURCE_DIR }}/staging_dir/target-*
+            ${{ env.SOURCE_DIR }}/build_dir/host
+            ${{ env.SOURCE_DIR }}/build_dir/toolchain-*
+          key: build-${{ needs.download.outputs.cache-key }}
+          restore-keys: |
+            build-
+
+  package:  # 打包作业
+    runs-on: ubuntu-22.04  # 运行环境
+    needs: [download, build]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: 恢复编译结果
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/bin
+          key: build-${{ needs.download.outputs.cache-key }}
+          restore-keys: |
+            build-
+      - name: 准备并上传产物
+        run: |
+          mkdir -p artifacts
+          find $SOURCE_DIR/bin/targets -type f \( -name "*.bin" -o -name "*.img.gz" \) -exec cp {} artifacts/ \; || true
+          if [ "$(ls -A artifacts/ 2>/dev/null)" ]; then
+            ls -lh artifacts/
+          else
+            echo "未找到构建产物，跳过上传"
+            exit 1
+          fi
+      - name: 上传到 Actions
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ImmortalWrt-MT7987-${{ github.run_number }}
+          path: artifacts/
+          retention-days: 30
+      - name: 创建预发布
+        uses: softprops/action-gh-release@v1
+        if: success() && hashFiles('artifacts/*') != ''
+        with:
+          tag_name: v${{ github.run_number }}
+          name: ImmortalWrt MT7987/MT7992 #${{ github.run_number }}
+          body: |
+            🔧 自动构建 ImmortalWrt MT7987/MT7992 固件
+            📅 时间: ${{ github.event.repository.updated_at }}
+            🌿 分支: ${{ env.REPO_BRANCH }}
+          prerelease: true
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 检出代码
         uses: actions/checkout@v4
         with:
