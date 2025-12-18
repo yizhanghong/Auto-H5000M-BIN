@@ -5,62 +5,62 @@ on:
       enable_adguardhome:
         description: '启用 AdGuardHome'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_homeproxy:
         description: '启用 HomeProxy'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       enable_openclash:
         description: '启用 OpenClash'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_mihomo:
         description: '启用 Mihomo'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       enable_upnp:
         description: '启用 UPnP'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_vlmcsd:
         description: '启用 VLMCSd'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_smartdns:
         description: '启用 SmartDNS'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       enable_mosdns:
         description: '启用 MosDNS'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_dockerman:
         description: '启用 DockerMan'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       enable_qmodem_next:
         description: '启用 QModem Next (新版JS前端) - 与旧版QModem互斥'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       enable_qmodem:
         description: '启用 QModem (旧版) - 与新版QModem Next互斥'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       enable_mwan:
         description: '启用 MWAN (多WAN负载均衡)'
         required: false
-        default: 'true'
+        default: true
         type: boolean
 
 # 权限：允许写入内容（用于创建 release）
@@ -325,65 +325,63 @@ jobs:
           if [ "${{ inputs.enable_mwan }}" = "true" ]; then
             grep -E "CONFIG_PACKAGE_(luci-app-qmodem-mwan|mwan3)=" .config || echo "MWAN 包未找到"
           fi
-        run: |
-          cd $SOURCE_DIR
-          echo "📥 开始下载依赖包..."
+
+          echo "\n📥 开始下载依赖包..."
           THREADS=$(($(nproc) + 1))
           export PATH="/usr/lib/ccache:$PATH"
           for i in 1 2 3; do
-            echo "下载尝试 $i/3..."
-            if make download -j16; then
-              echo "✅ 下载成功"
-              break
-            else
-              echo "❌ 下载失败，重试中..."
-              find dl -size -1024c -delete 2>/dev/null
-              sleep 5
-            fi
-          done
-      - name: 保存下载缓存
-        uses: actions/cache@v4
-        if: always()
-        with:
-          path: |
-            ${{ env.SOURCE_DIR }}/dl
-            ${{ env.SOURCE_DIR }}/staging_dir/host
-            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
-            ${{ env.SOURCE_DIR }}/staging_dir/target-*
-            ${{ env.SOURCE_DIR }}/build_dir/host
-            ${{ env.SOURCE_DIR }}/build_dir/toolchain-*
-            ${{ env.SOURCE_DIR }}/.config
-            ${{ env.SOURCE_DIR }}/feeds.conf.default
-          key: download-${{ steps.cache-key.outputs.key }}
-          restore-keys: |
-            download-
+            run: |
+              cd $SOURCE_DIR
+              echo "📦 关键包配置状态:"
+              grep -E "CONFIG_PACKAGE_qmodem=" .config || echo "QModem 核心包未找到"
+              if [ "${{ inputs.enable_qmodem_next }}" = "true" ] || [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(luci-app-qmodem|luci-app-qmodem-next)=" .config || echo "QModem UI 包未找到"
+              fi
+              if [ "${{ inputs.enable_adguardhome }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(luci-app-adguardhome|adguardhome)=" .config || echo "AdGuardHome 包未找到"
+              fi
+              if [ "${{ inputs.enable_mihomo }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(mihomo|luci-app-mihomo)=" .config || echo "Mihomo 包未找到"
+              fi
+              if [ "${{ inputs.enable_upnp }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_luci-app-upnp=" .config || echo "UPnP 包未找到"
+              fi
+              if [ "${{ inputs.enable_vlmcsd }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(luci-app-vlmcsd|vlmcsd)=" .config || echo "VLMCSd 包未找到"
+              fi
+              if [ "${{ inputs.enable_smartdns }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(smartdns|luci-app-smartdns)=" .config || echo "SmartDNS 包未找到"
+              fi
+              if [ "${{ inputs.enable_mosdns }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(mosdns|luci-app-mosdns)=" .config || echo "MosDNS 包未找到"
+              fi
+              if [ "${{ inputs.enable_dockerman }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(luci-app-dockerman|docker)=" .config || echo "DockerMan 包未找到"
+              fi
+              if [ "${{ inputs.enable_qmodem_next }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_luci-app-qmodem-next=" .config || echo "QModem Next 包未找到"
+              fi
+              if [ "${{ inputs.enable_qmodem }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_luci-app-qmodem=" .config || echo "QModem 包未找到"
+              fi
+              if [ "${{ inputs.enable_mwan }}" = "true" ]; then
+                grep -E "CONFIG_PACKAGE_(luci-app-qmodem-mwan|mwan3)=" .config || echo "MWAN 包未找到"
+              fi
 
-  build:  # 编译作业
-    runs-on: ubuntu-22.04  # 运行环境
-    needs: download
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: 重新创建源码目录
-        run: |
-          # 重新克隆源码（因为不同job使用不同runner）
-          if [ -d "$SOURCE_DIR/.git" ]; then
-            cd $SOURCE_DIR
-            git fetch origin $REPO_BRANCH
-            git reset --hard origin/$REPO_BRANCH
-            git clean -fd
-          else
-            rm -rf $SOURCE_DIR
-            git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
-            cd $SOURCE_DIR
-          fi
-
-          # 恢复feeds配置
-          if [ -f "$GITHUB_WORKSPACE/feeds.conf.default" ]; then
-            cp "$GITHUB_WORKSPACE/feeds.conf.default" ./feeds.conf.default
-          fi
+              echo "\n📥 开始下载依赖包..."
+              THREADS=$(($(nproc) + 1))
+              export PATH="/usr/lib/ccache:$PATH"
+              for i in 1 2 3; do
+                echo "下载尝试 $i/3..."
+                if make download -j16; then
+                  echo "✅ 下载成功"
+                  break
+                else
+                  echo "❌ 下载失败，重试中..."
+                  find dl -size -1024c -delete 2>/dev/null
+                  sleep 5
+                fi
+              done
       - name: 恢复下载缓存
         uses: actions/cache@v4
         with:
