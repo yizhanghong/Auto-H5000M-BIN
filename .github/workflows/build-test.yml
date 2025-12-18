@@ -159,7 +159,10 @@ jobs:
             git reset --hard origin/$REPO_BRANCH
             git clean -fd
           else
-            rm -rf $SOURCE_DIR
+            if [ -d "$SOURCE_DIR" ]; then
+              echo "⚠️ $SOURCE_DIR 已存在且不是 git 仓库，先删除..."
+              rm -rf "$SOURCE_DIR"
+            fi
             git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
           fi
           echo "✅ 源码克隆完成"
@@ -244,6 +247,10 @@ jobs:
       - name: 克隆源码
         run: |
           if [ ! -d "$SOURCE_DIR/.git" ]; then
+            if [ -d "$SOURCE_DIR" ]; then
+              echo "⚠️ $SOURCE_DIR 已存在且不是 git 仓库，先删除..."
+              rm -rf "$SOURCE_DIR"
+            fi
             git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
           fi
 
