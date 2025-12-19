@@ -67,9 +67,441 @@ env:
   TZ: Asia/Shanghai
 
 jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      enable_adguardhome: ${{ steps.set-env.outputs.enable_adguardhome }}
+      enable_openclash: ${{ steps.set-env.outputs.enable_openclash }}
+      enable_mihomo: ${{ steps.set-env.outputs.enable_mihomo }}
+      enable_upnp: ${{ steps.set-env.outputs.enable_upnp }}
+      enable_vlmcsd: ${{ steps.set-env.outputs.enable_vlmcsd }}
+      enable_mosdns: ${{ steps.set-env.outputs.enable_mosdns }}
+      enable_dockerman: ${{ steps.set-env.outputs.enable_dockerman }}
+      enable_qmodem_next: ${{ steps.set-env.outputs.enable_qmodem_next }}
+      enable_qmodem: ${{ steps.set-env.outputs.enable_qmodem }}
+      enable_mwan: ${{ steps.set-env.outputs.enable_mwan }}
+    steps:
+      - name: 设置环境变量
+        id: set-env
+        run: |
+          echo "enable_adguardhome=${{ inputs.enable_adguardhome || true }}" >> $GITHUB_OUTPUT
+          echo "enable_openclash=${{ inputs.enable_openclash || true }}" >> $GITHUB_OUTPUT
+          echo "enable_mihomo=${{ inputs.enable_mihomo || false }}" >> $GITHUB_OUTPUT
+          echo "enable_upnp=${{ inputs.enable_upnp || true }}" >> $GITHUB_OUTPUT
+          echo "enable_vlmcsd=${{ inputs.enable_vlmcsd || true }}" >> $GITHUB_OUTPUT
+          echo "enable_mosdns=${{ inputs.enable_mosdns || true }}" >> $GITHUB_OUTPUT
+          echo "enable_dockerman=${{ inputs.enable_dockerman || false }}" >> $GITHUB_OUTPUT
+          echo "enable_qmodem_next=${{ inputs.enable_qmodem_next || true }}" >> $GITHUB_OUTPUT
+          echo "enable_qmodem=${{ inputs.enable_qmodem || false }}" >> $GITHUB_OUTPUT
+          echo "enable_mwan=${{ inputs.enable_mwan || true }}" >> $GITHUB_OUTPUT
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 环境准备和缓存设置
+        run: |
+          echo "🔧 准备构建环境..."
+
+          # 基础清理
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* 2>/dev/null || true
+          docker system prune -f 2>/dev/null || true
+
+          # 检查磁盘空间
+          AVAIL_GB=$(df -BG / | tail -1 | awk '{print $4}' | sed 's/G//')
+          echo "💾 可用磁盘空间: ${AVAIL_GB}GB"
+
+          if [ "$AVAIL_GB" -lt 6 ]; then
+            echo "❌ 磁盘空间不足，需要至少6GB"
+            exit 1
+          fi
+
+          # 安装必要依赖
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git ccache python3 python3-pip \
+            libncurses5-dev libssl-dev libgmp3-dev libmbedtls-dev rustc cargo \
+            golang-go autoconf automake libtool patch make gcc g++
+
+      - name: 设置 ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ env.REPO_BRANCH }}
+          max-size: 8G
+          save: true
+
+      - name: 恢复构建缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.SOURCE_DIR }}/dl
+            ${{ env.SOURCE_DIR }}/staging_dir
+            ~/.ccache
+          key: ${{ runner.os }}-build-${{ env.REPO_BRANCH }}-${{ hashFiles('**/feeds.conf.default', '**/*.config') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.REPO_BRANCH }}-
+
+      - name: 源码和依赖准备
+        run: |
+          # 克隆或更新源码
+          if [ -d "$SOURCE_DIR/.git" ]; then
+            echo "📥 更新源码..."
+            cd $SOURCE_DIR
+            git fetch origin $REPO_BRANCH
+            git reset --hard origin/$REPO_BRANCH
+            git clean -fd
+          else
+            echo "📥 克隆源码..."
+            git clone -b $REPO_BRANCH --single-branch --depth=1 $REPO_URL $SOURCE_DIR
+          fi
+
+          # 设置 feeds
+          cd $SOURCE_DIR
+          if [ -f "$GITHUB_WORKSPACE/feeds.conf.default" ]; then
+            cp "$GITHUB_WORKSPACE/feeds.conf.default" ./feeds.conf.default
+          fi
+
+          # 根据输入动态添加 feeds
+          if [ "${{ steps.set-env.outputs.enable_mihomo }}" = "true" ] && ! grep -q "mihomo" feeds.conf.default; then
+            echo 'src-git mihomo https://github.com/morytyann/OpenWrt-mihomo.git;main' >> feeds.conf.default
+          fi
+          if [ "${{ steps.set-env.outputs.enable_qmodem_next }}" = "true" ] || [ "${{ steps.set-env.outputs.enable_qmodem }}" = "true" ]; then
+            if ! grep -q "qmodem" feeds.conf.default; then
+              echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+            fi
+          fi
+
+          # 更新 feeds
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -f
+
+      - name: 修复依赖和补丁
+        run: |
+          cd $SOURCE_DIR
+          echo "🔧 应用补丁和修复依赖..."
+
+          # 下载额外包
+          if [ "${{ steps.set-env.outputs.enable_adguardhome }}" = "true" ]; then
+            [ ! -d "package/luci-app-adguardhome" ] && \
+              git clone --depth=1 https://github.com/rufengsuixing/luci-app-adguardhome.git package/luci-app-adguardhome || true
+          fi
+
+          # 修复 AdGuardHome 路径问题
+          if [ "${{ steps.set-env.outputs.enable_adguardhome }}" = "true" ]; then
+            # 修复安装脚本
+            AGH_SCRIPT="package/luci-app-adguardhome/root/usr/share/AdGuardHome/links.sh"
+            [ -f "$AGH_SCRIPT" ] && sed -i 's|mv /usr/bin/AdGuardHome|rm -rf /usr/bin/AdGuardHome 2>/dev/null; mkdir -p /usr/bin/AdGuardHome; mv|g' "$AGH_SCRIPT" || true
+          fi
+
+          # 移除问题包
+          rm -rf package/feeds/packages/{exim,onionshare-cli,python-zope-event,python-zope-interface,python-gevent,python-twisted} 2>/dev/null || true
+
+          # 修复 QModem 冲突
+          rm -rf package/feeds/qmodem/ndisc6 2>/dev/null || true
+
+          # 修复 kmod-mhi-wwan 依赖
+          QMODEM_MK="package/feeds/qmodem/qmodem/Makefile"
+          if [ -f "$QMODEM_MK" ]; then
+            sed -i 's/DEPENDS:=.*+kmod-mhi-wwan/# &/g' "$QMODEM_MK" || true
+          fi
+
+          # 修复 mt_hwifi 依赖
+          MT_HWIFI_MK="package/mtk/drivers/mt_hwifi/Makefile"
+          if [ -f "$MT_HWIFI_MK" ]; then
+            sed -i 's/+kmod-mt_wifi_osal//g' "$MT_HWIFI_MK" || true
+          fi
+
+          echo "✅ 依赖修复完成"
+
+      - name: 配置构建
+        run: |
+          cd $SOURCE_DIR
+          echo "⚙️ 配置构建选项..."
+
+          # 验证互斥选项
+          if [ "${{ steps.set-env.outputs.enable_qmodem_next }}" = "true" ] && [ "${{ steps.set-env.outputs.enable_qmodem }}" = "true" ]; then
+            echo "❌ 错误: 不能同时启用 QModem Next 和 QModem！"
+            exit 1
+          fi
+
+          # 下载基础配置
+          curl -fsSL "$CONFIG_URL" -o base.config || {
+            [ -f "defconfig/mt7987_mt7992.config" ] && cp defconfig/mt7987_mt7992.config base.config
+          }
+
+          cat base.config > .config
+
+          # 应用额外配置
+          if [ -f "$GITHUB_WORKSPACE/h5000m.extra.config" ]; then
+            cat "$GITHUB_WORKSPACE/h5000m.extra.config" >> .config
+          fi
+
+          # 根据输入动态配置包
+          enable_pkg() { echo "CONFIG_PACKAGE_$1=y" >> .config; }
+          disable_pkg() { echo "# CONFIG_PACKAGE_$1 is not set" >> .config; }
+
+          # AdGuardHome
+          if [ "${{ steps.set-env.outputs.enable_adguardhome }}" = "true" ]; then
+            enable_pkg "luci-app-adguardhome"
+            enable_pkg "adguardhome"
+          else
+            disable_pkg "luci-app-adguardhome"
+            disable_pkg "adguardhome"
+          fi
+
+          # OpenClash
+          if [ "${{ steps.set-env.outputs.enable_openclash }}" = "true" ]; then
+            enable_pkg "luci-app-openclash"
+            enable_pkg "bash"
+            enable_pkg "dnsmasq-full"
+            enable_pkg "curl"
+            enable_pkg "ca-bundle"
+            enable_pkg "ip-full"
+            enable_pkg "kmod-nft-tproxy"
+            enable_pkg "luci-compat"
+          else
+            disable_pkg "luci-app-openclash"
+          fi
+
+          # Mihomo
+          [ "${{ steps.set-env.outputs.enable_mihomo }}" = "true" ] && {
+            enable_pkg "mihomo"
+            enable_pkg "luci-app-mihomo"
+          }
+
+          # 其他包
+          [ "${{ steps.set-env.outputs.enable_upnp }}" = "true" ] && enable_pkg "luci-app-upnp" || disable_pkg "luci-app-upnp"
+
+          if [ "${{ steps.set-env.outputs.enable_vlmcsd }}" = "true" ]; then
+            enable_pkg "vlmcsd"
+            enable_pkg "luci-app-vlmcsd"
+          else
+            disable_pkg "vlmcsd"
+            disable_pkg "luci-app-vlmcsd"
+          fi
+
+          [ "${{ steps.set-env.outputs.enable_mosdns }}" = "true" ] && {
+            enable_pkg "mosdns"
+            enable_pkg "luci-app-mosdns"
+          } || {
+            disable_pkg "mosdns"
+            disable_pkg "luci-app-mosdns"
+          }
+          [ "${{ steps.set-env.outputs.enable_dockerman }}" = "true" ] && {
+            enable_pkg "docker"
+            enable_pkg "luci-app-dockerman"
+          }
+
+          # QModem
+          if [ "${{ steps.set-env.outputs.enable_qmodem_next }}" = "true" ]; then
+            enable_pkg "luci-app-qmodem-next"
+          elif [ "${{ steps.set-env.outputs.enable_qmodem }}" = "true" ]; then
+            enable_pkg "luci-app-qmodem"
+          fi
+
+          # MWAN
+          [ "${{ steps.set-env.outputs.enable_mwan }}" = "true" ] && {
+            enable_pkg "mwan3"
+            enable_pkg "luci-app-mwan3"
+          }
+
+          make defconfig
+          echo "✅ 配置完成"
+
+      - name: 打包源码
+        run: |
+          echo "📦 打包源码和配置..."
+          tar -czf source.tar.gz $SOURCE_DIR $GITHUB_WORKSPACE/h5000m.extra.config $GITHUB_WORKSPACE/feeds.conf.default 2>/dev/null || true
+
+      - name: 上传源码
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ github.run_number }}
+          path: source.tar.gz
+          retention-days: 1
+
   build:
+    needs: prepare
     runs-on: ubuntu-22.04
     steps:
+      - name: 下载源码
+        uses: actions/download-artifact@v4
+        with:
+          name: source-${{ github.run_number }}
+
+      - name: 解压源码
+        run: |
+          echo "📦 解压源码..."
+          tar -xzf source.tar.gz
+          ls -la
+
+      - name: 深度清理磁盘空间
+        run: |
+          echo "🧹 执行深度清理以释放磁盘空间..."
+          
+          # 删除 Docker 镜像
+          docker rmi $(docker images -q) 2>/dev/null || true
+          
+          # 删除不需要的大型组件
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /etc/mysql /etc/php /usr/local/share/boost /usr/share/swift \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/local/graalvm /imagegeneration \
+            /usr/share/dotnet /usr/local/lib/android /opt/ghc /etc/mysql /etc/php \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache /usr/local/.ghcup \
+            /usr/local/graalvm /imagegeneration 2>/dev/null || true
+          
+          # 卸载不需要的软件
+          sudo apt-get -y purge azure-cli* docker* ghc* zulu* hhvm* llvm* firefox* \
+            google* dotnet* aspnetcore* powershell* openjdk* adoptopenjdk* mysql* php* \
+            mongodb* moby* snap* 2>/dev/null || true
+          
+          # 清理包管理器
+          sudo apt-get autoremove --purge -y
+          sudo apt-get clean
+          sudo apt-get autoclean
+          
+          # 清理临时文件
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          
+          # Docker 清理
+          docker system prune -f 2>/dev/null || true
+          
+          AVAIL_GB=$(df -BG / | tail -1 | awk '{print $4}' | sed 's/G//')
+          echo "✅ 清理后可用磁盘空间: ${AVAIL_GB}GB"
+
+      - name: 编译固件
+        run: |
+          cd $SOURCE_DIR
+          THREADS=$(($(nproc) + 1))
+          export PATH="/usr/lib/ccache:$PATH"
+
+          echo "🔨 开始编译 (${THREADS} 线程)..."
+          START_TIME=$(date +%s)
+
+          # 下载依赖
+          if ! make download -j$(($THREADS * 2)); then
+            echo "⚠️ 下载失败，清理重试..."
+            find dl -size -1024c -delete 2>/dev/null || true
+            make download -j$(($THREADS * 2))
+          fi
+
+          # 编译
+          if make -j$THREADS BUILD_LOG=1 IGNORE_ERRORS=m; then
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            echo "✅ 编译成功 (耗时: ${DURATION}s)"
+          else
+            echo "⚠️ 并行编译失败，尝试单线程..."
+            make -j1 V=s || {
+              echo "❌ 编译失败"
+              exit 1
+            }
+          fi
+
+      - name: 打包产物
+        run: |
+          cd $SOURCE_DIR
+          echo "📦 打包产物..."
+          mkdir -p ../artifacts
+          find bin/targets -type f \( -name "*.bin" -o -name "*.img.gz" \) -exec cp {} ../artifacts/ \;
+          cd ..
+          tar -czf artifacts.tar.gz artifacts/
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ github.run_number }}
+          path: artifacts.tar.gz
+          retention-days: 30
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    if: success()
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-${{ github.run_number }}
+
+      - name: 解压产物
+        run: |
+          echo "📦 解压产物..."
+          tar -xzf artifacts.tar.gz
+          ls -la artifacts/
+
+      - name: 收集和上传产物
+        run: |
+          if [ -z "$(ls -A artifacts/ 2>/dev/null)" ]; then
+            echo "❌ 没有找到产物文件"
+            exit 1
+          fi
+
+          # 生成清单
+          cat > artifacts/MANIFEST.txt << EOF
+          ╔════════════════════════════════════════════════╗
+          ║    ImmortalWrt H5000M 固件构建信息             ║
+          ╚════════════════════════════════════════════════╝
+
+          📅 构建时间: $(date '+%Y-%m-%d %H:%M:%S')
+          🔗 运行 ID: ${{ github.run_id }}
+          🏷️  Build #: ${{ github.run_number }}
+
+          ⚙️ 启用的功能:
+          • AdGuardHome:   ${{ needs.prepare.outputs.enable_adguardhome }}
+          • OpenClash:     ${{ needs.prepare.outputs.enable_openclash }}
+          • Mihomo:        ${{ needs.prepare.outputs.enable_mihomo }}
+          • UPnP:          ${{ needs.prepare.outputs.enable_upnp }}
+          • VLMCSd:        ${{ needs.prepare.outputs.enable_vlmcsd }}
+          • MosDNS:        ${{ needs.prepare.outputs.enable_mosdns }}
+          • DockerMan:     ${{ needs.prepare.outputs.enable_dockerman }}
+          • QModem Next:   ${{ needs.prepare.outputs.enable_qmodem_next }}
+          • QModem:        ${{ needs.prepare.outputs.enable_qmodem }}
+          • MWAN:          ${{ needs.prepare.outputs.enable_mwan }}
+
+          📦 产物文件:
+          EOF
+
+          cd artifacts
+          ls -lh | grep -v "^total" | awk '{print "  • " $9 " (" $5 ")"}' >> MANIFEST.txt
+
+          echo "✅ 产物收集完成:"
+          ls -lh
+
+      - name: 上传构建结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-H5000M-${{ github.run_number }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: ImmortalWrt H5000M #${{ github.run_number }}
+          body: |
+            🎉 **ImmortalWrt H5000M 固件已构建完成**
+
+            📅 时间: $(date '+%Y-%m-%d %H:%M:%S')
+            🔗 运行 ID: ${{ github.run_id }}
+
+            **⚙️ 启用的功能:**
+            - AdGuardHome: ${{ needs.prepare.outputs.enable_adguardhome }}
+            - OpenClash: ${{ needs.prepare.outputs.enable_openclash }}
+            - Mihomo: ${{ needs.prepare.outputs.enable_mihomo }}
+            - UPnP: ${{ needs.prepare.outputs.enable_upnp }}
+            - VLMCSd: ${{ needs.prepare.outputs.enable_vlmcsd }}
+            - MosDNS: ${{ needs.prepare.outputs.enable_mosdns }}
+            - Docker: ${{ needs.prepare.outputs.enable_dockerman }}
+            - MWAN: ${{ needs.prepare.outputs.enable_mwan }}
+
+            💾 下载产物: 见下方 Artifacts
+            📋 详细信息: 见 MANIFEST.txt
+          prerelease: false
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 检出代码
         uses: actions/checkout@v4
         with:
