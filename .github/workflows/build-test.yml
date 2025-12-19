@@ -179,7 +179,7 @@ jobs:
           # 下载额外包
           if [ "${{ steps.set-env.outputs.enable_adguardhome }}" = "true" ]; then
             [ ! -d "package/luci-app-adguardhome" ] && \
-              git clone --depth=1 https://github.com/rufengsuixing/luci-app-adguardhome.git package/luci-app-adguardhome || true
+              git clone --depth=1 https://github.com/MIAOBUSI/luci-app-adguardhome.git package/luci-app-adguardhome || true
           fi
 
           # MosDNS 安装步骤
