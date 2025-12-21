@@ -1,4 +1,4 @@
-name: "Build ImmortalWrt H5000M"
+name: Build ImmortalWrt H5000M
 
 on:
   schedule:
