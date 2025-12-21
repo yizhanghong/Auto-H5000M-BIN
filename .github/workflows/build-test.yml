@@ -59,7 +59,7 @@ on:
       enable_homeproxy:
         description: '启用 HomeProxy'
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:
