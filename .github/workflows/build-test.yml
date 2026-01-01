@@ -106,12 +106,20 @@ jobs:
       - name: 设置环境变量
         id: set-env
         run: |
-          # 使用循环设置输出变量
-          for var in adguardhome openclash nikki upnp vlmcsd mosdns dockerman qmodem_next qmodem mwan homeproxy adbyby_plus original_modem; do
-            value="${!var}"
-            [ -z "$value" ] && value="false"
-            echo "enable_$var=$value" >> $GITHUB_OUTPUT
-          done
+          # 从 workflow_dispatch inputs 读取配置
+          echo "enable_adguardhome=${{ github.event.inputs.enable_adguardhome || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_openclash=${{ github.event.inputs.enable_openclash || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_nikki=${{ github.event.inputs.enable_nikki || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_upnp=${{ github.event.inputs.enable_upnp || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_vlmcsd=${{ github.event.inputs.enable_vlmcsd || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_mosdns=${{ github.event.inputs.enable_mosdns || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_dockerman=${{ github.event.inputs.enable_dockerman || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_qmodem_next=${{ github.event.inputs.enable_qmodem_next || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_qmodem=${{ github.event.inputs.enable_qmodem || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_mwan=${{ github.event.inputs.enable_mwan || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_homeproxy=${{ github.event.inputs.enable_homeproxy || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_adbyby_plus=${{ github.event.inputs.enable_adbyby_plus || 'false' }}" >> $GITHUB_OUTPUT
+          echo "enable_original_modem=${{ github.event.inputs.enable_original_modem || 'false' }}" >> $GITHUB_OUTPUT
 
       - name: 检出代码
         uses: actions/checkout@v4
@@ -219,13 +227,6 @@ jobs:
           else
             sed -i '/coolsnowwolf_luci/d' feeds.conf.default
           fi
-          if [ "${{ steps.set-env.outputs.enable_adbyby_plus }}" = "true" ]; then
-            if ! grep -q "coolsnowwolf_luci" feeds.conf.default; then
-              echo 'src-git coolsnowwolf_luci https://github.com/coolsnowwolf/luci.git;master' >> feeds.conf.default
-            fi
-          else
-            sed -i '/coolsnowwolf_luci/d' feeds.conf.default
-          fi
 
           # feeds update/install
           echo "🔄 更新 feeds..."
@@ -237,15 +238,48 @@ jobs:
           cd $SOURCE_DIR
           echo "🔧 应用补丁和修复依赖..."
           
-           # ⭐ 修复 qmi_wwan_f 驱动 Linux 6.6 兼容性
-          QMI_WWAN_F_SOURCE="package/mtk/applications/5g-modem/fibocom_QMI_WWAN/qmi_wwan_f.c"
-          if [ -f "$QMI_WWAN_F_SOURCE" ]; then
-            echo "🔧 修复 qmi_wwan_f 驱动兼容性..."
-            sed -i 's/u64_stats_fetch_begin_irq/u64_stats_fetch_begin/g' "$QMI_WWAN_F_SOURCE"
-            sed -i 's/u64_stats_fetch_retry_irq/u64_stats_fetch_retry/g' "$QMI_WWAN_F_SOURCE"
-            sed -i 's/memcpy (qmap_net->dev_addr, real_dev->dev_addr, ETH_ALEN);/memcpy (qmap_net->dev_addr, (void *)real_dev->dev_addr, ETH_ALEN);/g' "$QMI_WWAN_F_SOURCE"
-            echo "✅ qmi_wwan_f 兼容性修复完成"
-          fi
+          # ⭐ 修复 QMI WWAN 驱动 Linux 6.6 兼容性 (所有厂商驱动)
+          fix_qmi_driver() {
+            local SOURCE_FILE="$1"
+            if [ -f "$SOURCE_FILE" ]; then
+              echo "🔧 修复驱动: $SOURCE_FILE"
+              
+              # 修复 u64_stats API 变更 (Linux 6.x 移除了 _irq 后缀)
+              sed -i 's/u64_stats_fetch_begin_irq/u64_stats_fetch_begin/g' "$SOURCE_FILE"
+              sed -i 's/u64_stats_fetch_retry_irq/u64_stats_fetch_retry/g' "$SOURCE_FILE"
+              
+              # 修复 dev_addr 只读问题 (Linux 5.15+ dev_addr 变为 const)
+              # 方法1: 使用 eth_hw_addr_set (推荐)
+              if grep -q 'memcpy.*qmap_net->dev_addr.*real_dev->dev_addr' "$SOURCE_FILE"; then
+                sed -i 's/memcpy[[:space:]]*(qmap_net->dev_addr,[[:space:]]*real_dev->dev_addr,[[:space:]]*ETH_ALEN);/eth_hw_addr_set(qmap_net, real_dev->dev_addr);/g' "$SOURCE_FILE"
+              fi
+              # 方法2: 处理其他可能的 memcpy 到 dev_addr 的情况
+              if grep -q 'memcpy.*->dev_addr' "$SOURCE_FILE"; then
+                # 使用 dev_addr_set 作为备用方案
+                sed -i 's/memcpy[[:space:]]*(\([^,]*\)->dev_addr,[[:space:]]*\([^,]*\),[[:space:]]*ETH_ALEN);/dev_addr_set(\1, \2);/g' "$SOURCE_FILE" 2>/dev/null || true
+              fi
+              
+              echo "✅ 驱动修复完成: $SOURCE_FILE"
+            fi
+          }
+          
+          # 修复 Fibocom QMI WWAN 驱动
+          fix_qmi_driver "package/mtk/applications/5g-modem/fibocom_QMI_WWAN/qmi_wwan_f.c"
+          fix_qmi_driver "package/mtk/applications/5g-modem/fibocom_QMI_WWAN/src/qmi_wwan_f.c"
+          
+          # 修复 Quectel QMI WWAN 驱动 (如果存在)
+          fix_qmi_driver "package/mtk/applications/5g-modem/quectel_QMI_WWAN/qmi_wwan_q.c"
+          fix_qmi_driver "package/mtk/applications/5g-modem/quectel_QMI_WWAN/src/qmi_wwan_q.c"
+          
+          # 修复 Simcom QMI WWAN 驱动 (如果存在)
+          fix_qmi_driver "package/mtk/applications/5g-modem/simcom_QMI_WWAN/qmi_wwan_s.c"
+          fix_qmi_driver "package/mtk/applications/5g-modem/simcom_QMI_WWAN/src/qmi_wwan_s.c"
+          
+          # 修复 feeds 中的 QModem 驱动 (如果存在)
+          for driver_file in $(find feeds/qmodem -name "*.c" -type f 2>/dev/null | xargs grep -l "u64_stats_fetch_begin_irq\|memcpy.*dev_addr" 2>/dev/null || true); do
+            fix_qmi_driver "$driver_file"
+          done
+          
           # 下载额外包
           if [ "${{ steps.set-env.outputs.enable_adguardhome }}" = "true" ]; then
             [ ! -d "package/luci-app-adguardhome" ] && \
@@ -328,10 +362,21 @@ jobs:
           # 根据输入动态配置包（简化：只启用顶层包，依赖由 make defconfig 自动解析）
           disabled_pkgs=("luci-app-sms-tool-lite" "luci-app-3ginfo-lite")
 
-          packages=("adguardhome" "openclash" "nikki" "upnp" "vlmcsd" "mosdns" "dockerman" "mwan" "homeproxy" "adbyby_plus")
+          # 读取环境变量到关联数组
+          declare -A pkg_enabled
+          pkg_enabled["adguardhome"]="${{ steps.set-env.outputs.enable_adguardhome }}"
+          pkg_enabled["openclash"]="${{ steps.set-env.outputs.enable_openclash }}"
+          pkg_enabled["nikki"]="${{ steps.set-env.outputs.enable_nikki }}"
+          pkg_enabled["upnp"]="${{ steps.set-env.outputs.enable_upnp }}"
+          pkg_enabled["vlmcsd"]="${{ steps.set-env.outputs.enable_vlmcsd }}"
+          pkg_enabled["mosdns"]="${{ steps.set-env.outputs.enable_mosdns }}"
+          pkg_enabled["dockerman"]="${{ steps.set-env.outputs.enable_dockerman }}"
+          pkg_enabled["mwan3"]="${{ steps.set-env.outputs.enable_mwan }}"
+          pkg_enabled["homeproxy"]="${{ steps.set-env.outputs.enable_homeproxy }}"
+          pkg_enabled["adbyby-plus"]="${{ steps.set-env.outputs.enable_adbyby_plus }}"
 
-          for pkg in "${packages[@]}"; do
-            if [ "${!pkg}" = "true" ]; then
+          for pkg in "${!pkg_enabled[@]}"; do
+            if [ "${pkg_enabled[$pkg]}" = "true" ]; then
               echo "CONFIG_PACKAGE_luci-app-$pkg=y" >> .config
             else
               disabled_pkgs+=("luci-app-$pkg")
@@ -444,6 +489,19 @@ jobs:
           echo "📦 解压源码..."
           tar -xzf source.tar.gz
           echo "✅ 源码解压完成"
+
+      - name: 安装编译依赖
+        run: |
+          echo "📦 安装编译依赖..."
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git ccache python3 python3-pip \
+            libncurses5-dev libssl-dev libgmp3-dev libmbedtls-dev \
+            autoconf automake libtool patch make gcc g++ gawk gettext unzip file wget
+          
+          # 设置 ccache
+          export PATH="/usr/lib/ccache:$PATH"
+          echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+          echo "✅ 编译依赖安装完成"
 
       - name: 深度清理磁盘空间
         run: |
