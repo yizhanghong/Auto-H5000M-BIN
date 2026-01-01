@@ -214,14 +214,7 @@ jobs:
             sed -i '/qmodem/d' feeds.conf.default
           fi
 
-          # Adbyby Plus feed
-          if [ "${{ steps.set-env.outputs.enable_adbyby_plus }}" = "true" ]; then
-            if ! grep -q "coolsnowwolf_luci" feeds.conf.default; then
-              echo 'src-git coolsnowwolf_luci https://github.com/coolsnowwolf/luci.git;master' >> feeds.conf.default
-            fi
-          else
-            sed -i '/coolsnowwolf_luci/d' feeds.conf.default
-          fi
+          # Adbyby Plus 现在通过直接 clone 仓库安装，不再使用 feed
 
           # 显示最终的 feeds.conf.default 内容
           echo "📋 当前 feeds.conf.default 内容:"
@@ -243,10 +236,7 @@ jobs:
             rm -rf feeds/qmodem feeds/qmodem.index feeds/qmodem.tmp 2>/dev/null || true
             rm -rf package/feeds/qmodem 2>/dev/null || true
           fi
-          if [ "${{ steps.set-env.outputs.enable_adbyby_plus }}" != "true" ]; then
-            rm -rf feeds/coolsnowwolf_luci feeds/coolsnowwolf_luci.index feeds/coolsnowwolf_luci.tmp 2>/dev/null || true
-            rm -rf package/feeds/coolsnowwolf_luci 2>/dev/null || true
-          fi
+          # Adbyby Plus 通过 package 目录安装，无需清理 feed
 
           # feeds update/install
           echo "🔄 更新 feeds..."
@@ -359,6 +349,17 @@ jobs:
               sed -i '/^#!/a\
             [ -f /usr/bin/AdGuardHome ] && rm -f /usr/bin/AdGuardHome && mkdir -p /usr/bin/AdGuardHome' "$AGH_LUCI_INIT" || true
             fi
+          fi
+
+          # Adbyby Plus Lite 安装 (仓库有子目录结构)
+          if [ "${{ steps.set-env.outputs.enable_adbyby_plus }}" = "true" ]; then
+            echo "🔧 安装 Adbyby Plus Lite..."
+            if [ ! -d "package/luci-app-adbyby-plus" ]; then
+              git clone --depth=1 https://github.com/kongfl888/luci-app-adbyby-plus-lite.git /tmp/adbyby-plus-lite
+              cp -r /tmp/adbyby-plus-lite/luci-app-adbyby-plus package/luci-app-adbyby-plus
+              rm -rf /tmp/adbyby-plus-lite
+            fi
+            echo "✅ Adbyby Plus Lite 安装完成"
           fi
 
           # MosDNS 安装步骤
