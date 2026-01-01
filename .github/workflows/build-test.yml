@@ -456,9 +456,33 @@ jobs:
 
           for pkg in "${!pkg_enabled[@]}"; do
             if [ "${pkg_enabled[$pkg]}" = "true" ]; then
-              echo "CONFIG_PACKAGE_luci-app-$pkg=y" >> .config
+              # nikki 需要特殊处理
+              if [ "$pkg" = "nikki" ]; then
+                echo "🔧 配置 Nikki 及其依赖..."
+                # Nikki 核心包
+                echo "CONFIG_PACKAGE_nikki=y" >> .config
+                echo "CONFIG_PACKAGE_luci-app-nikki=y" >> .config
+                echo "CONFIG_PACKAGE_luci-i18n-nikki-zh-cn=y" >> .config
+                # Nikki 依赖
+                echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+                echo "CONFIG_PACKAGE_curl=y" >> .config
+                echo "CONFIG_PACKAGE_yq=y" >> .config
+                echo "CONFIG_PACKAGE_firewall4=y" >> .config
+                echo "CONFIG_PACKAGE_ip-full=y" >> .config
+                echo "CONFIG_PACKAGE_kmod-inet-diag=y" >> .config
+                echo "CONFIG_PACKAGE_kmod-nft-socket=y" >> .config
+                echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
+                echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
+              else
+                echo "CONFIG_PACKAGE_luci-app-$pkg=y" >> .config
+              fi
             else
-              disabled_pkgs+=("luci-app-$pkg")
+              # nikki 禁用时添加所有相关包
+              if [ "$pkg" = "nikki" ]; then
+                disabled_pkgs+=("nikki" "luci-app-nikki" "luci-i18n-nikki-zh-cn" "luci-i18n-nikki-en")
+              else
+                disabled_pkgs+=("luci-app-$pkg")
+              fi
             fi
           done
 
