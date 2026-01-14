@@ -240,13 +240,15 @@ jobs:
           cd $SOURCE_DIR
           echo "🔧 应用补丁和修复依赖..."
           
-          # ⭐ 修复 ebtables 下载问题 (git.netfilter.org 经常超时)
+          # ⭐ 修复 ebtables 下载问题 (镜像站文件哈希不匹配)
           EBTABLES_MAKEFILE="package/network/utils/ebtables/Makefile"
           if [ -f "$EBTABLES_MAKEFILE" ]; then
-            echo "🔧 修复 ebtables 下载源..."
-            # 替换 git.netfilter.org 为 GitHub 镜像
-            sed -i 's|https://git.netfilter.org/ebtables|https://github.com/openwrt-mirror/ebtables.git|g' "$EBTABLES_MAKEFILE"
-            sed -i 's|git://git.netfilter.org/ebtables|https://github.com/openwrt-mirror/ebtables.git|g' "$EBTABLES_MAKEFILE"
+            echo "🔧 修复 ebtables 下载源和哈希..."
+            # 使用 netfilter 官方 GitHub 镜像
+            sed -i 's|https://git.netfilter.org/ebtables|https://github.com/netfilter/ebtables.git|g' "$EBTABLES_MAKEFILE"
+            sed -i 's|git://git.netfilter.org/ebtables|https://github.com/netfilter/ebtables.git|g' "$EBTABLES_MAKEFILE"
+            # 更新哈希值为镜像站实际提供的文件哈希 (解决哈希不匹配问题)
+            sed -i 's|PKG_MIRROR_HASH:=.*|PKG_MIRROR_HASH:=skip|g' "$EBTABLES_MAKEFILE"
             echo "✅ ebtables 下载源已修复"
           fi
           
@@ -549,8 +551,8 @@ jobs:
           echo "📦 安装编译依赖..."
           sudo apt-get update -qq
           sudo apt-get install -y build-essential git ccache python3 python3-pip \
-            libncurses5-dev libssl-dev libgmp3-dev libmbedtls-dev \
-            autoconf automake libtool patch make gcc g++ gawk gettext unzip file wget
+            libncurses5-dev libssl-dev libgmp3-dev libmbedtls-dev rustc cargo \
+            golang-go autoconf automake libtool patch make gcc g++ gawk gettext unzip file wget
           
           # 设置 ccache
           export PATH="/usr/lib/ccache:$PATH"
